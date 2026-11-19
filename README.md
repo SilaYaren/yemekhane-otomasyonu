@@ -1,15 +1,16 @@
-# Yemekhane Otomasyonu · Başlangıç Paketi
+# Yemekhane Otomasyonu
 
-Web Teknolojileri dönem ödevinin hazır altyapısı. Veritabanı şeması, örnek veri, kaynak-replika
-replikasyonu, Redis ve Apache tek komutla çalışır. Sizin yazacağınız kısım **uygulama servisi ve arayüzdür**.
+Web Teknolojileri dönem ödevi. Veritabanı şeması, örnek veri, kaynak-replika replikasyonu,
+Redis, Express tabanlı JSON Web API'si ve Apache üzerinden sunulan vanilla HTML/CSS/JavaScript
+arayüzü Compose ile çalışır. Aşama 2 arayüzü React kullanmaz.
 
 ## Hızlı başlangıç
 
 Gerekenler: Docker Desktop (Windows/macOS) ya da Docker Engine + Compose v2 (Linux), Git.
 
 ```bash
-git clone <kendi-deponuz>
-cd yemekhane-baslangic
+git clone https://github.com/SilaYaren/yemekhane-otomasyonu.git
+cd yemekhane-otomasyonu
 docker compose up -d
 docker compose ps -a
 ```
@@ -21,6 +22,7 @@ docker compose ps -a
 | mysql-primary | `Up (healthy)` |
 | mysql-replica | `Up (healthy)` |
 | redis | `Up (healthy)` |
+| uygulama | `Up (healthy)` |
 | frontend | `Up (healthy)` |
 | replica-setup | `Exited (0)` — işini yapıp çıkar, bu normaldir |
 
@@ -28,15 +30,22 @@ docker compose ps -a
 
 Tarayıcıda: <http://localhost:8080>
 
+İlk açılışta MySQL şema ve örnek veriyi yükler; uygulama hazır olana kadar Apache bekler.
+`SESSION_SECRET` ortam değişkeni ile yerel ders ortamındaki varsayılan oturum imzasını
+değiştirebilirsiniz. Üretim ortamında güçlü ve gizli bir değer kullanın.
+
 ## Klasör yapısı
 
 ```
-docker-compose.yml        servisler; uygulama servisi yorum satırında
+docker-compose.yml        MySQL, Redis, API ve Apache servisleri
 db/init/01_sema.sql       12 tablo, 3 view, 4 stored procedure
 db/init/02_ornek_veri.sql 30 kullanıcı, 52 yemek, 84 menü, ~365 rezervasyon
 db/replica-setup.sh       replikayı bir kez kurar ve salt okunur yapar
 apache/                   Apache 2.4 imajı ve yönlendirme ayarı (MVC / Web API)
-frontend/                 Apache'nin sunduğu HTML/CSS (css/temel.css başlangıç stilleri)
+frontend/                 Apache'nin sunduğu HTML/CSS/JavaScript SPA
+uygulama/src/             API route, controller, repository ve DB bağlantı katmanları
+uygulama/test/            Node.js yerleşik test çalıştırıcısı ile doğrulama testleri
+rapor/asama2.pdf          Aşama 2 uygulama ve doğrulama raporu
 ```
 
 `db/init` içindeki dosyalar **yalnızca veritabanı ilk kez oluşturulurken** çalışır. Sonradan
@@ -131,20 +140,24 @@ CALL sp_turnike_gecis(7, 1, CONCAT(CURDATE(), ' 12:15:00'));
 
 Yordamlar yazma işlemidir; **kaynakta** (`mysql-primary`) çağrılır.
 
-## Uygulama servisini ekleme (Aşama 2)
+## Aşama 2 uygulama mimarisi
 
-1. Kodunuzu ve `Dockerfile`'ı `uygulama/` klasörüne koyun. Uygulama container içinde **8000**
-   portunu dinlesin (farklıysa `docker-compose.yml` içindeki `UYGULAMA_ADRES`'i değiştirin).
-2. `docker-compose.yml` sonundaki `uygulama:` bloğunun yorumlarını kaldırın.
-3. Uygulama bağlantı bilgilerini ortam değişkenlerinden okusun:
-   `DB_YAZMA_HOST`, `DB_OKUMA_HOST`, `DB_PORT`, `DB_ADI`, `DB_KULLANICI`, `DB_SIFRE`, `REDIS_HOST`, `REDIS_PORT`.
-4. Apache modunu seçin: `frontend` servisinde `command: ["httpd-foreground", "-D", "WEBAPI"]`
-   - **WEBAPI**: `/api/...` uygulamaya gider, geri kalanı `frontend/` klasöründen sunulur.
-     Uygulamanızın yolları `/api/` ile başlamalıdır.
-   - **MVC**: `/css/`, `/img/`, `/js/`, `/hata/` Apache'den, geri kalan her şey uygulamadan gelir.
-5. `docker compose up -d --build`
+Seçilen yaklaşım **JSON Web API**'dir. Apache `frontend/` içindeki HTML, CSS ve JavaScript'i
+sunar; `/api/...` isteklerini Express servisine yönlendirir. API yanıtları JSON'dur. Uygulama
+katmanları `uygulama/src/routes.js` (route ve rol kontrolleri), `controllers.js` (HTTP akışı),
+`repositories.js` (SQL/veri erişimi) ve `database.js` (ayrı primary/replica havuzları) olarak
+ayrılmıştır. Sorgulama ve rapor okumaları replikaya; rezervasyon, iptal, bakiye yükleme,
+değerlendirme ve menü yazmaları kaynağa gider. Rezervasyon sonrası bakiye kaynak DB'den okunur.
 
-Uygulama henüz yoksa ya da çökmüşse Apache `frontend/hata/503.html` sayfasını gösterir.
+Arayüzde giriş/çıkış, günlük ve haftalık menüler, rezervasyonlar, bakiye, değerlendirme ve
+yönetici paneli bulunur. Aşama 2'de Redis altyapısı çalışır, ancak Redis tabanlı cache ve
+oturum deposu entegrasyonu Aşama 3 kapsamındadır.
+
+Testleri çalıştırmak için:
+
+```bash
+docker compose run --rm --no-deps uygulama npm test
+```
 
 ## Doğrulama komutları (Aşama 1)
 

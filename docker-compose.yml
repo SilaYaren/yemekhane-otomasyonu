@@ -32,6 +32,7 @@ x-uygulama-ortam: &uygulama-ortam
   DB_SIFRE: Uyg_2026
   REDIS_HOST: redis
   REDIS_PORT: "6379"
+  SESSION_SECRET: ${SESSION_SECRET:-yemekhane-ders-oturumu-degistir}
 
 services:
 
@@ -95,7 +96,7 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------
-  # Redis · menü önbelleği ve oturum deposu (AOF açık, yeniden başlatmada veri kalır)
+  # Redis · Aşama 3 önbellek/oturum entegrasyonu için altyapı (AOF açık)
   # ---------------------------------------------------------------
   redis:
     image: redis:7.4-alpine
@@ -131,25 +132,35 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    depends_on:
+      uygulama:
+        condition: service_healthy
 
   # ---------------------------------------------------------------
-  # UYGULAMA · BU SERVİSİ SİZ YAZACAKSINIZ (Aşama 2)
-  # 1. ./uygulama klasörüne kodunuzu ve Dockerfile'ı koyun.
-  # 2. Uygulama container içinde 8000 portunu dinlesin (ya da UYGULAMA_ADRES'i değiştirin).
-  # 3. Aşağıdaki satırların başındaki "# " işaretlerini kaldırın.
+  # Uygulama API'si · frontend HTML/CSS/JS Apache'den, /api istekleri buradan.
   # ---------------------------------------------------------------
-  # uygulama:
-  #   build: ./uygulama
-  #   restart: unless-stopped
-  #   environment:
-  #     <<: *uygulama-ortam
-  #   depends_on:
-  #     mysql-primary:
-  #       condition: service_healthy
-  #     redis:
-  #       condition: service_healthy
-  #     replica-setup:
-  #       condition: service_completed_successfully
+  uygulama:
+    build: ./uygulama
+    restart: unless-stopped
+    environment:
+      <<: *uygulama-ortam
+      PORT: "8000"
+      NODE_ENV: production
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      mysql-replica:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      replica-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   mysql-primary-veri:
