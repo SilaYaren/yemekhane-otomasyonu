@@ -46,6 +46,7 @@ frontend/                 Apache'nin sunduğu HTML/CSS/JavaScript SPA
 uygulama/src/             API route, controller, repository ve DB bağlantı katmanları
 uygulama/test/            Node.js yerleşik test çalıştırıcısı ile doğrulama testleri
 rapor/asama2.pdf          Aşama 2 uygulama ve doğrulama raporu
+rapor/asama3.pdf          Aşama 3 Redis cache/session uygulama raporu
 ```
 
 `db/init` içindeki dosyalar **yalnızca veritabanı ilk kez oluşturulurken** çalışır. Sonradan
@@ -145,13 +146,44 @@ Yordamlar yazma işlemidir; **kaynakta** (`mysql-primary`) çağrılır.
 Seçilen yaklaşım **JSON Web API**'dir. Apache `frontend/` içindeki HTML, CSS ve JavaScript'i
 sunar; `/api/...` isteklerini Express servisine yönlendirir. API yanıtları JSON'dur. Uygulama
 katmanları `uygulama/src/routes.js` (route ve rol kontrolleri), `controllers.js` (HTTP akışı),
-`repositories.js` (SQL/veri erişimi) ve `database.js` (ayrı primary/replica havuzları) olarak
-ayrılmıştır. Sorgulama ve rapor okumaları replikaya; rezervasyon, iptal, bakiye yükleme,
-değerlendirme ve menü yazmaları kaynağa gider. Rezervasyon sonrası bakiye kaynak DB'den okunur.
+`repositories.js` (SQL/veri erişimi), `database.js` (ayrı primary/replica havuzları),
+`menu-cache.js` (Redis menü önbelleği) ve `redis.js` (Redis bağlantısı) olarak ayrılmıştır.
+Sorgulama ve rapor okumaları replikaya; rezervasyon, iptal, bakiye yükleme, değerlendirme ve menü
+yazmaları kaynağa gider. Rezervasyon sonrası bakiye kaynak DB'den okunur.
 
 Arayüzde giriş/çıkış, günlük ve haftalık menüler, rezervasyonlar, bakiye, değerlendirme ve
-yönetici paneli bulunur. Aşama 2'de Redis altyapısı çalışır, ancak Redis tabanlı cache ve
-oturum deposu entegrasyonu Aşama 3 kapsamındadır.
+yönetici paneli bulunur.
+
+## Aşama 3: Redis önbelleği ve oturumları
+
+- Günlük, haftalık ve yönetici menü yanıtları Redis'te önbelleğe alınır. Anahtar; route, tarih/filtre,
+  rol ve kullanıcı kimliğini içerir; kullanıcıya özgü rezervasyon/fiyat alanları birbirine karışmaz.
+- Önbellek girdilerinin TTL'i `Europe/Istanbul` saat diliminde gün sonuna ayarlanır.
+  `[MENU_CACHE] MISS ... source=database` ilk DB yüklemesini, `HIT ... source=redis` sonraki Redis
+  yanıtını, `INVALIDATED` ise silme nedenini gösterir.
+- Yönetici menü kaydettiğinde, rezervasyon oluşturulup iptal edildiğinde veya puan kaydedildiğinde
+  menü cache'i geçersizleştirilir. Cache nesli atomik artırıldığı için eşzamanlı eski bir DB okuması
+  geçersizleştirmeden sonra yeni cache girdisi olarak yazılamaz.
+- Express oturumları `yemekhane:sess:` anahtar alanıyla Redis'te saklanır. Cookie ve Redis TTL'i
+  30 dakikadır; her yanıtta yenilenir. Logout session kaydını siler. Redis AOF sayesinde uygulama
+  container'ının yeniden başlaması oturumları düşürmez.
+- Redis bağlantısı hazır olmadan API dinlemeye başlamaz; `/api/health` hem iki MySQL havuzunu hem
+  Redis'i kontrol eder.
+
+Doğrulama komutları:
+
+```bash
+docker compose run --rm --no-deps uygulama npm test
+docker compose logs uygulama
+docker compose exec redis redis-cli --scan --pattern 'yemekhane:menu:*'
+docker compose exec redis redis-cli --scan --pattern 'yemekhane:sess:*'
+```
+
+Testlerde cache miss/hit ve geçersizleştirme; 30 dakikalık oturum TTL yenilenmesi, uygulama restart'ı
+sonrası aynı session ile kimlik doğrulama ve logout sonrası Redis anahtarının silinmesi kontrol
+edilmiştir. Yönetici menüsü güncellemesi sonrasında öğrenci menü yanıtında yeni fiyatın göründüğü ve
+test fiyatının geri alındığı da doğrulanmıştır. Ayrıntılı komut ve sonuçlar
+[`rapor/asama3.pdf`](./rapor/asama3.pdf) içindedir.
 
 Testleri çalıştırmak için:
 

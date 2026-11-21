@@ -1,5 +1,7 @@
 const bcrypt = require('bcryptjs');
 const repository = require('./repositories');
+const { client: redisClient } = require('./redis');
+const { menuCache } = require('./menu-cache');
 const { positiveId, isoDate, moneyAmount, menuInput, ratingInput } = require('./input');
 
 function safeUser(user) {
@@ -81,6 +83,7 @@ function regenerateSession(session) {
 const controllers = {
   health: asyncRoute(async (_req, res) => {
     await repository.checkConnections();
+    await redisClient.ping();
     res.json({ status: 'ok' });
   }),
 
@@ -123,20 +126,36 @@ const controllers = {
     const date = currentDate();
     const yemekhaneId = req.query.yemekhaneId ? positiveId(req.query.yemekhaneId, 'Yemekhane') : null;
     const ogunId = req.query.ogunId ? positiveId(req.query.ogunId, 'Öğün') : null;
-    const rows = await repository.getMenus({
-      start: date, end: date, cafeteriaId: yemekhaneId, mealId: ogunId, userId: req.session.user.id
+    const result = await menuCache.getOrLoad({
+      route: 'menus/today',
+      userId: req.session.user.id,
+      role: req.session.user.rol,
+      params: { date, yemekhaneId, ogunId }
+    }, async () => {
+      const rows = await repository.getMenus({
+        start: date, end: date, cafeteriaId: yemekhaneId, mealId: ogunId, userId: req.session.user.id
+      });
+      return { tarih: date, menuler: groupMenuRows(rows, req.session.user) };
     });
-    res.json({ tarih: date, menuler: groupMenuRows(rows, req.session.user) });
+    res.json(result);
   }),
 
   weekMenus: asyncRoute(async (req, res) => {
     const start = weekStart(req.query.start ? isoDate(req.query.start, 'Başlangıç tarihi') : currentDate());
     const end = shiftDate(start, 6);
     const yemekhaneId = req.query.yemekhaneId ? positiveId(req.query.yemekhaneId, 'Yemekhane') : null;
-    const rows = await repository.getMenus({
-      start, end, cafeteriaId: yemekhaneId, userId: req.session.user.id
+    const result = await menuCache.getOrLoad({
+      route: 'menus/week',
+      userId: req.session.user.id,
+      role: req.session.user.rol,
+      params: { start, end, yemekhaneId }
+    }, async () => {
+      const rows = await repository.getMenus({
+        start, end, cafeteriaId: yemekhaneId, userId: req.session.user.id
+      });
+      return { baslangic: start, bitis: end, menuler: groupMenuRows(rows, req.session.user) };
     });
-    res.json({ baslangic: start, bitis: end, menuler: groupMenuRows(rows, req.session.user) });
+    res.json(result);
   }),
 
   reservations: asyncRoute(async (req, res) => {
@@ -154,6 +173,7 @@ const controllers = {
   createReservation: asyncRoute(async (req, res) => {
     const menuId = positiveId(req.body?.menuId, 'Menü');
     const result = await repository.createReservation(req.session.user.id, menuId);
+    await menuCache.invalidate('reservation-created');
     res.status(201).json({
       rezervasyonId: result.rezervasyon_id,
       ucret: result.ucret,
@@ -164,6 +184,7 @@ const controllers = {
   cancelReservation: asyncRoute(async (req, res) => {
     const reservationId = positiveId(req.params.id, 'Rezervasyon');
     const result = await repository.cancelReservation(req.session.user.id, reservationId);
+    await menuCache.invalidate('reservation-cancelled');
     res.json({ rezervasyonId: result.rezervasyon_id, iade: result.iade, bakiye: result.bakiye });
   }),
 
@@ -193,6 +214,7 @@ const controllers = {
       return res.status(403).json({ error: 'Yalnızca kullandığın bir menüyü değerlendirebilirsin.' });
     }
     await repository.saveRating(req.session.user.id, rating);
+    await menuCache.invalidate('rating-saved');
     res.status(201).json({ ok: true });
   }),
 
@@ -200,17 +222,25 @@ const controllers = {
     const start = weekStart(req.query.start ? isoDate(req.query.start, 'Başlangıç tarihi') : currentDate());
     const end = shiftDate(start, 6);
     const yemekhaneId = req.query.yemekhaneId ? positiveId(req.query.yemekhaneId, 'Yemekhane') : null;
-    const rows = await repository.getMenus({ start, end, cafeteriaId: yemekhaneId, userId: null });
-    const menuler = groupMenuRows(rows, { rol: 'yonetici' });
-    res.json({
-      menuler: menuler.map((menu) => ({
-        id: menu.id, tarih: menu.tarih, yemekhane: menu.yemekhane, ogun: menu.ogun,
-        kapasite: menu.kapasite, rezerve: menu.rezerve, bosYer: menu.bosYer,
-        dolulukYuzde: menu.dolulukYuzde, oySayisi: menu.oySayisi,
-        ortalamaPuan: menu.ortalamaPuan, ogrenciFiyati: menu.ogrenciFiyati,
-        personelFiyati: menu.personelFiyati
-      }))
+    const result = await menuCache.getOrLoad({
+      route: 'admin/menus',
+      userId: req.session.user.id,
+      role: req.session.user.rol,
+      params: { start, end, yemekhaneId }
+    }, async () => {
+      const rows = await repository.getMenus({ start, end, cafeteriaId: yemekhaneId, userId: null });
+      const menuler = groupMenuRows(rows, { rol: 'yonetici' });
+      return {
+        menuler: menuler.map((menu) => ({
+          id: menu.id, tarih: menu.tarih, yemekhane: menu.yemekhane, ogun: menu.ogun,
+          kapasite: menu.kapasite, rezerve: menu.rezerve, bosYer: menu.bosYer,
+          dolulukYuzde: menu.dolulukYuzde, oySayisi: menu.oySayisi,
+          ortalamaPuan: menu.ortalamaPuan, ogrenciFiyati: menu.ogrenciFiyati,
+          personelFiyati: menu.personelFiyati
+        }))
+      };
     });
+    res.json(result);
   }),
 
   adminMenu: asyncRoute(async (req, res) => {
@@ -223,6 +253,7 @@ const controllers = {
   saveAdminMenu: asyncRoute(async (req, res) => {
     const menu = menuInput(req.body);
     const id = await repository.saveMenu(menu);
+    await menuCache.invalidate('admin-menu-saved');
     res.status(menu.id ? 200 : 201).json({ id });
   })
 };

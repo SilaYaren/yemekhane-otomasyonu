@@ -96,7 +96,7 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------
-  # Redis · Aşama 3 önbellek/oturum entegrasyonu için altyapı (AOF açık)
+  # Redis · Aşama 3 menü önbelleği ve kalıcı oturum deposu (AOF açık)
   # ---------------------------------------------------------------
   redis:
     image: redis:7.4-alpine
